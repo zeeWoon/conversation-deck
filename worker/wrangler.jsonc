@@ -1,0 +1,18 @@
+// Conversation Deck: Cloudflare server settings. Cloudflare reads this file when it builds the server from GitHub.
+// The two secrets (SHEET_API and SHEET_KEY) are NOT in this file: add them in the Cloudflare dashboard.
+{
+  "name": "conversation-deck",
+  "main": "src/index.js",
+  "compatibility_date": "2025-09-01",
+  "workers_dev": true,
+  "durable_objects": {
+    "bindings": [
+      { "name": "LOBBY", "class_name": "Lobby" },
+      { "name": "HUB", "class_name": "Hub" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Lobby", "Hub"] }
+  ],
+  "observability": { "enabled": true }
+}
