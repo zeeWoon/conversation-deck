@@ -28,6 +28,9 @@ const CFG = {
   LOG_GAP: 15000,
   LOG_KEEP: 2000,             /* rows kept while the sheet cannot be reached */
   TICK_MS: 30000,             /* while phones are connected, the lobby checks for away players and the closed switch this often */
+  IDLE_MS: 10 * 60000,        /* a lobby where nobody has tapped anything for this long stops checking the sheet */
+  IDLE_TICK_MS: 5 * 60000,    /* ...and checks on its connections only this often */
+  QUIET_MS: 5 * 60000,        /* a connection with no ping for this long (a phone put away with the page open) is closed */
   SHEET_TIMEOUT: 25000,
   MAX_BODY: 8000
 };
@@ -368,9 +371,13 @@ export class Lobby extends DurableObject {
 
   hub() { return hubOf(this.env); }
 
+  /** True when nobody in this lobby has joined, drawn, locked in or moved on for a while. */
+  idle() { return !!this.L && Date.now() - (this.L.tap || this.L.created || 0) > CFG.IDLE_MS; }
+
   /** Settings and deck list. Normally a stale copy is used while a fresh one is fetched; wait=true (the alarm) waits for the fresh one. */
   async getInfo(wait) {
     if (this.info && Date.now() - this.infoAt < CFG.SETTINGS_MS) return this.info;
+    if (this.info && this.idle()) return this.info;      /* nobody is tapping: don't keep asking the sheet */
     if (!this.infoP) {
       this.infoP = this.hub().info(!!wait).then(i => {
         const changed = JSON.stringify(i) !== JSON.stringify(this.info);
@@ -436,7 +443,7 @@ export class Lobby extends DurableObject {
     if (!this.L) return;
     const now = Date.now();
     let t = (this.L.last || now) + CFG.LOBBY_TTL;
-    if (this.ctx.getWebSockets().length) t = Math.min(t, now + CFG.TICK_MS);
+    if (this.ctx.getWebSockets().length) t = Math.min(t, now + (this.idle() ? CFG.IDLE_TICK_MS : CFG.TICK_MS));
     if (this.logq.length) t = Math.min(t, this.logq[0].at + CFG.LOG_GAP);
     t = Math.max(t, now + 1000);
     if (this.alarmAt === undefined) this.alarmAt = await this.ctx.storage.getAlarm();
@@ -475,12 +482,13 @@ export class Lobby extends DurableObject {
     if (!this.L) { await this.ctx.storage.deleteAll(); return; }
     const now = Date.now();
     if (this.logq.length && (now - this.logq[0].at >= CFG.LOG_GAP || this.logq.length >= CFG.LOG_BATCH)) await this.flushLog();
+    this.closeQuiet(now);
     const socks = this.ctx.getWebSockets();
     if (socks.length) {
       const live = this.liveMap();
       live.forEach((t, id) => { if (now - t < CFG.AWAY_MS) this.seen.set(id, Math.max(this.seen.get(id) || 0, t)); });
-      let info = null;
-      try { info = await this.getInfo(true); } catch (e) {}
+      let info = this.info;
+      if (!this.idle()) { try { info = await this.getInfo(true); } catch (e) {} }
       if (info && !info.cfg.open) this.pushClosed(info.cfg.closedMsg);
       else {
         this.closedSent = false;
@@ -494,6 +502,17 @@ export class Lobby extends DurableObject {
       return;
     }
     await this.arm(true);
+  }
+
+  /** Close connections that have sent no ping for a long time, so a phone left with the page open doesn't keep the lobby busy.
+   *  When that phone is used again, the page reconnects by itself. */
+  closeQuiet(now) {
+    for (const ws of this.ctx.getWebSockets()) {
+      let t = 0;
+      try { const att = ws.deserializeAttachment(); t = att && att.at || 0; } catch (e) {}
+      try { const ar = this.ctx.getWebSocketAutoResponseTimestamp(ws); if (ar) t = Math.max(t, ar.getTime()); } catch (e) {}
+      if (now - t > CFG.QUIET_MS) { try { ws.close(1001, 'quiet'); } catch (e) {} }
+    }
   }
 
   /* ----- who is here ----- */
@@ -718,6 +737,7 @@ export class Lobby extends DurableObject {
     else {
       const lang = normLang(m.lang);
       att.at = Date.now();
+      if (lang && lang !== att.lang && this.L) this.L.tap = Date.now();   /* switching language is a tap too */
       if (lang) att.lang = lang;
       try { ws.serializeAttachment(att); } catch (e) {}
       r = await this.act(Object.assign(plain(m), { token: att.pid, code: this.L.code }));
@@ -747,6 +767,7 @@ export class Lobby extends DurableObject {
       if (a === 'create') return await this.actCreate(req, token, code);
       if (!this.L || this.L.code !== code) return { ok: false, err: 'nolobby' };
       if (a === 'leave') return this.actLeave(token);
+      if (a !== 'state') this.L.tap = Date.now();         /* join, draw, lock and next wake an idle lobby */
       const info = await this.getInfo();
       if (!info.cfg.open) return { ok: false, err: 'closed', msg: info.cfg.closedMsg };
       if (!this.L) return { ok: false, err: 'nolobby' };
@@ -811,7 +832,7 @@ export class Lobby extends DurableObject {
     if (!d) return { ok: false, err: 'nodeck' };
     if (this.L) return { ok: false, err: 'exists' };
     const now = Date.now();
-    this.L = { code, deck: meta.id, created: now, pr: now, locked: {}, players: {}, order: [], v: 0 };
+    this.L = { code, deck: meta.id, created: now, pr: now, tap: now, locked: {}, players: {}, order: [], v: 0 };
     this.L.players[token] = this.newPlayer(name);
     this.L.players[token].lang = d.lang;
     this.L.order.push(token);
