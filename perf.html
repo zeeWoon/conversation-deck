@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Conversation Deck · speed test</title>
+<style>
+:root{--bg:#F6F4EF;--card:#FFFFFF;--fg:#1E2421;--muted:#5D6762;--line:#DDD8CC;--accent:#2C7DA6;--good:#2E7D57;--warn:#B7791F;--bad:#C2410C}
+@media (prefers-color-scheme:dark){:root{--bg:#121614;--card:#1B201D;--fg:#E9EEEA;--muted:#9AA59F;--line:#2D3530;--accent:#5AB0DA;--good:#5CC08A;--warn:#E3A84A;--bad:#F07B4F;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:20px 16px 48px}
+main{max-width:720px;margin:0 auto;display:grid;gap:16px}
+h1{font-size:22px;margin:0}
+p{margin:0}
+.muted{color:var(--muted)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;display:grid;gap:12px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button{font:inherit;font-weight:600;border:0;border-radius:10px;padding:10px 14px;background:var(--accent);color:#fff;cursor:pointer}
+button.ghost{background:transparent;color:var(--fg);border:1px solid var(--line)}
+button:disabled{opacity:.5;cursor:default}
+input{font:inherit;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);min-width:0}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:14px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+td:first-child{min-width:9em}
+th{font-weight:600;color:var(--muted);font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+td.n{text-align:right}
+.tw{overflow-x:auto}
+#log{font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;max-height:260px;overflow:auto;margin:0;color:var(--muted)}
+.verdict{font-weight:600}
+.good{color:var(--good)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden}
+.bar>i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+</style>
+</head>
+<body>
+<main>
+  <div>
+    <h1>Conversation Deck: speed test</h1>
+    <p class="muted">Runs a pretend crowd against your live app from this browser and measures how fast it answers. It starts one test lobby with players named "Test 1", "Test 2" and so on, so those names appear in your Joins tab, and their locked cards appear in the Log tab. Delete those rows afterwards if you like.</p>
+  </div>
+
+  <div class="card">
+    <p id="target" class="muted">Finding your app link…</p>
+    <div class="row">
+      <label for="pass" class="muted">Host passcode (only if you set one)</label>
+      <input id="pass" autocomplete="off" style="flex:1">
+    </div>
+    <div class="row">
+      <button data-n="10">Quick check · 10 players</button>
+      <button data-n="30">Small group · 30</button>
+      <button data-n="100">Big crowd · 100</button>
+      <button id="stop" class="ghost" disabled>Stop</button>
+    </div>
+    <div class="bar"><i id="prog"></i></div>
+    <p id="status" class="muted">Pick a size to start. The big crowd test takes about 2 minutes.</p>
+  </div>
+
+  <div class="card" id="results" hidden>
+    <p id="verdict" class="verdict"></p>
+    <div class="tw"><table>
+      <thead><tr><th>Step</th><th class="n">Requests</th><th class="n">Typical</th><th class="n">Slowest 5%</th><th class="n">Slowest</th><th class="n">Busy, retried</th><th class="n">Failed</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table></div>
+    <p id="notes" class="muted"></p>
+  </div>
+
+  <div class="card">
+    <p class="muted">Details</p>
+    <pre id="log"></pre>
+  </div>
+</main>
+<script>
+(function(){
+'use strict';
+var $=function(s){return document.querySelector(s);};
+var API='', stopFlag=false, PH=/^https?:\/\//;
+function log(m){ var el=$('#log'); el.textContent+=m+'\n'; el.scrollTop=el.scrollHeight; }
+function status(m){ $('#status').textContent=m; }
+function prog(f){ $('#prog').style.width=Math.round(f*100)+'%'; }
+function sleep(ms){ return new Promise(function(r){setTimeout(r,ms);}); }
+function token(){ var a='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',s=''; for(var i=0;i<20;i++) s+=a.charAt(Math.floor(Math.random()*a.length)); return s; }
+
+/* the app link is read from index.html in the same folder, so this page needs no editing */
+fetch('./index.html',{cache:'no-store'}).then(function(r){return r.text();}).then(function(h){
+  var m=h.match(/window\.SU_API\s*=\s*'([^']*)'/);
+  API=m&&PH.test(m[1])?m[1]:'';
+  if(!API){ $('#target').textContent='Could not find your Apps Script link in index.html. Put perf.html in the same place as your index.html.'; disableAll(true); return; }
+  $('#target').textContent='Testing: …'+API.slice(-28);
+}).catch(function(){ $('#target').textContent='Could not read index.html next to this page.'; disableAll(true); });
+
+function disableAll(b){ document.querySelectorAll('button[data-n]').forEach(function(x){x.disabled=b;}); }
+
+/* one request, the same way the app sends it */
+function once(a,p){
+  var t0=performance.now();
+  var ctl=new AbortController(), tm=setTimeout(function(){ctl.abort();},45000);
+  return fetch(API,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(Object.assign({a:a},p||{})),redirect:'follow',credentials:'omit',signal:ctl.signal})
+    .then(function(r){return r.text();})
+    .then(function(s){ clearTimeout(tm); var r; try{ r=JSON.parse(s); }catch(e){ r={ok:false,err:'bad-reply'}; } r._ms=performance.now()-t0; return r; })
+    .catch(function(e){ clearTimeout(tm); return {ok:false,err:'network',_ms:performance.now()-t0}; });
+}
+/* "busy" means nothing happened on the server, so the app asks again: same here */
+async function call(a,p,st){
+  var r=await once(a,p), tries=0;
+  while(!r.ok&&r.err==='busy'&&tries<3){ tries++; st.busy++; await sleep(500+Math.random()*1200); r=await once(a,p); }
+  st.ms.push(r._ms); if(!r.ok){ st.fail++; if(st.errs.length<5) st.errs.push(r.err||'?'); }
+  return r;
+}
+function newStat(name){ return {name:name,ms:[],busy:0,fail:0,errs:[]}; }
+function pct(arr,p){ if(!arr.length) return 0; var s=arr.slice().sort(function(a,b){return a-b;}); return s[Math.min(s.length-1,Math.floor(p*(s.length-1)))]; }
+function sec(ms){ return (ms/1000).toFixed(ms<10000?2:1)+' s'; }
+/* run tasks with at most k in flight at once */
+async function pool(items,k,fn,onDone){
+  var i=0, done=0;
+  async function worker(){ while(i<items.length&&!stopFlag){ var j=i++; await fn(items[j],j); done++; onDone&&onDone(done); } }
+  var ws=[]; for(var w=0;w<k;w++) ws.push(worker()); await Promise.all(ws);
+}
+
+var rows=[];
+function addRow(st){
+  rows.push(st);
+  var tr=document.createElement('tr');
+  tr.innerHTML='<td></td><td class="n"></td><td class="n"></td><td class="n"></td><td class="n"></td><td class="n"></td><td class="n"></td>';
+  var c=tr.children; c[0].textContent=st.name; c[1].textContent=st.ms.length; c[2].textContent=sec(pct(st.ms,.5)); c[3].textContent=sec(pct(st.ms,.95)); c[4].textContent=sec(Math.max.apply(null,st.ms.concat([0]))); c[5].textContent=st.busy; c[6].textContent=st.fail;
+  if(st.fail) c[6].className='n bad';
+  $('#tbody').appendChild(tr); $('#results').hidden=false;
+}
+
+async function run(N){
+  stopFlag=false; rows=[]; $('#tbody').innerHTML=''; $('#verdict').textContent=''; $('#notes').textContent=''; $('#log').textContent='';
+  disableAll(true); $('#stop').disabled=false; prog(0);
+  var K=Math.min(N,20);   /* requests in flight at once from this browser; real phones would each have their own */
+  var t0=performance.now(), notes=[];
+  try{
+    status('Step 1 of 6: warming up…');
+    var s1=newStat('Load the deck list'), ver='';
+    for(var i=0;i<4&&!stopFlag;i++){ var r=await call('decks',{lang:'en'},s1); if(r.ok) ver=r.ver; log('decks '+Math.round(r._ms)+' ms'+(r.ok?'':' '+r.err)); }
+    addRow(s1); prog(.05);
+    if(s1.fail===s1.ms.length) throw new Error('The app did not answer: '+s1.errs.join(', ')+'. Check the link in index.html and that the Apps Script is deployed with access for Anyone.');
+    if(ver) log('server version '+ver);
+    if(ver&&ver<'2.3') notes.push('The live Apps Script is version '+ver+'. Deploy v2.4 for the GitHub page to work properly.');
+
+    status('Step 2 of 6: starting a test lobby…');
+    var s2=newStat('Start a lobby'), host={name:'Test host',token:token()};
+    var cr=await call('create',{name:host.name,token:host.token,deck:'justmet',lang:'en',pass:$('#pass').value.trim()},s2);
+    addRow(s2);
+    if(!cr.ok) throw new Error(cr.err==='pass'?'The host passcode is needed. Type it in the box and try again.':cr.err==='closed'?'The app is closed (Settings tab, open = no). Open it and try again.':'Could not start a lobby: '+cr.err);
+    var code=cr.code; log('lobby '+code); prog(.1);
+
+    var players=[host]; for(var p=1;p<N;p++) players.push({name:'Test '+p,token:token()});
+    status('Step 3 of 6: '+(N-1)+' players join…');
+    var s3=newStat('Join the lobby');
+    await pool(players.slice(1),K,function(pl){ return call('join',{code:code,name:pl.name,token:pl.token,lang:'en'},s3).then(function(r){ if(!r.ok) log(pl.name+' join failed: '+r.err); }); },function(d){ prog(.1+.2*d/(N-1)); });
+    addRow(s3);
+
+    status('Step 4 of 6: everyone draws a card at the same moment…');
+    var s4=newStat('Draw a card');
+    await pool(players,K,function(pl){ return call('draw',{code:code,token:pl.token,lang:'en',cats:[]},s4).then(function(r){ pl.card=r.ok&&r.me&&r.me.card?r.me.card.q:''; if(!r.ok) log(pl.name+' draw failed: '+r.err); }); },function(d){ prog(.3+.15*d/N); });
+    addRow(s4);
+
+    status('Step 5 of 6: everyone locks in…');
+    var s5=newStat('Lock in');
+    var locked=[];
+    await pool(players,K,function(pl){ return call('lock',{code:code,token:pl.token,lang:'en'},s5).then(function(r){ if(r.ok&&r.me&&r.me.card) locked.push(r.me.card.q); else log(pl.name+' lock failed: '+r.err); }); },function(d){ prog(.45+.15*d/N); });
+    addRow(s5);
+    var uniq=new Set(locked).size;
+    log(locked.length+' cards locked, '+uniq+' different');
+    if(uniq!==locked.length) notes.push('Two players locked the same card. This should never happen; please report it.');
+
+    var pollMs=Math.min(30000,Math.max(3000,3000+(N-10)*100)), secs=N>=100?60:30;
+    status('Step 6 of 6: '+N+' players keep their screens open for '+secs+' seconds…');
+    var s6=newStat('Keep the screen updated');
+    var end=performance.now()+secs*1000;
+    /* each player checks in at the app's own rhythm, starting at a random moment like real phones */
+    await Promise.all(players.map(async function(pl){
+      await sleep(Math.random()*pollMs);
+      while(performance.now()<end&&!stopFlag){ var r=await call('state',{code:code,token:pl.token,lang:'en'},s6); if(r.ok&&r.poll) pollMs=r.poll; await sleep(pollMs*(0.85+Math.random()*0.3)); prog(.6+.38*Math.min(1,1-(end-performance.now())/(secs*1000))); }
+    }));
+    addRow(s6);
+    var rps=s6.ms.length/secs;
+    log('screen updates: '+s6.ms.length+' in '+secs+' s ('+rps.toFixed(1)+' per second, every '+(pollMs/1000)+' s per player)');
+
+    status('Cleaning up: test players leave…');
+    await pool(players,K,function(pl){ return once('leave',{code:code,token:pl.token}); });
+    prog(1);
+
+    var all=rows.reduce(function(a,s){return a.concat(s.ms);},[]), fails=rows.reduce(function(a,s){return a+s.fail;},0);
+    var act=s4.ms.concat(s5.ms), p50=pct(act,.5), p95=pct(act,.95), upd=pct(s6.ms,.95);
+    var v, cls;
+    if(fails===0&&p95<3000&&upd<3000){ v='Good: '+N+' players got answers quickly. A tap on Draw or Lock typically took '+sec(p50)+', and 95% took under '+sec(p95)+'.'; cls='good'; }
+    else if(fails<=Math.max(1,N*0.02)&&p95<8000){ v='Usable, but slow at moments: taps typically took '+sec(p50)+', with the slowest 5% over '+sec(p95)+'.'; cls='warn'; }
+    else { v='Struggling at '+N+' players: '+fails+' requests failed and the slowest taps took over '+sec(p95)+'.'; cls='bad'; }
+    $('#verdict').textContent=v; $('#verdict').className='verdict '+cls;
+    notes.push('This browser sent at most '+K+' requests at the same time. Real phones each connect on their own, so a real crowd puts the same load on the app but may queue less on the phone side.');
+    notes.push('The whole test took '+sec(performance.now()-t0)+'. Test lobby: '+code+'.');
+    $('#notes').textContent=notes.join(' ');
+    status('Done.');
+  }catch(e){
+    status(String(e.message||e)); log('stopped: '+(e.message||e));
+  }finally{
+    disableAll(false); $('#stop').disabled=true;
+  }
+}
+document.querySelectorAll('button[data-n]').forEach(function(b){ b.addEventListener('click',function(){ run(+b.getAttribute('data-n')); }); });
+$('#stop').addEventListener('click',function(){ stopFlag=true; status('Stopping…'); });
+})();
+</script>
+</body>
+</html>
