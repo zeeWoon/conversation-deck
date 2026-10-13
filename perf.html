@@ -59,7 +59,7 @@ td.n{text-align:right}
   <div class="card" id="results" hidden>
     <p id="verdict" class="verdict"></p>
     <div class="tw"><table>
-      <thead><tr><th>Step</th><th class="n">Requests</th><th class="n">Typical</th><th class="n">Slowest 5%</th><th class="n">Slowest</th><th class="n">Busy, retried</th><th class="n">Failed</th></tr></thead>
+      <thead><tr><th>Step</th><th class="n">Requests</th><th class="n">Typical</th><th class="n">Slowest 5%</th><th class="n">Slowest</th><th class="n">Retried</th><th class="n">Failed</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table></div>
     <p id="notes" class="muted"></p>
@@ -74,7 +74,7 @@ td.n{text-align:right}
 (function(){
 'use strict';
 var $=function(s){return document.querySelector(s);};
-var API='', stopFlag=false, PH=/^https?:\/\//;
+var API='', WORKER='', stopFlag=false, PH=/^https?:\/\//;
 function log(m){ var el=$('#log'); el.textContent+=m+'\n'; el.scrollTop=el.scrollHeight; }
 function status(m){ $('#status').textContent=m; }
 function prog(f){ $('#prog').style.width=Math.round(f*100)+'%'; }
@@ -83,8 +83,10 @@ function token(){ var a='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 
 /* the app link is read from index.html in the same folder, so this page needs no editing */
 fetch('./index.html',{cache:'no-store'}).then(function(r){return r.text();}).then(function(h){
-  var m=h.match(/window\.SU_API\s*=\s*'([^']*)'/);
+  var m=h.match(/window\.SU_API\s*=\s*'([^']*)'/), w=h.match(/window\.SU_WORKER\s*=\s*'([^']*)'/);
   API=m&&PH.test(m[1])?m[1]:'';
+  WORKER=w&&PH.test(w[1].trim())?w[1].trim().replace(/\/+$/,''):'';
+  if(WORKER){ API=WORKER+'/api'; $('#target').textContent='Testing the Cloudflare server: '+WORKER.replace(/^https?:\/\//,''); return; }
   if(!API){ $('#target').textContent='Could not find your Apps Script link in index.html. Put perf.html in the same place as your index.html.'; disableAll(true); return; }
   $('#target').textContent='Testing: …'+API.slice(-28);
 }).catch(function(){ $('#target').textContent='Could not read index.html next to this page.'; disableAll(true); });
@@ -94,7 +96,7 @@ function disableAll(b){ document.querySelectorAll('button[data-n]').forEach(func
 /* one request, the same way the app sends it */
 function once(a,p){
   var t0=performance.now();
-  var ctl=new AbortController(), tm=setTimeout(function(){ctl.abort();},45000);
+  var ctl=new AbortController(), tm=setTimeout(function(){ctl.abort();},(a==='draw'||a==='create')?30000:20000);   /* same limits as the app */
   return fetch(API,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(Object.assign({a:a},p||{})),redirect:'follow',credentials:'omit',signal:ctl.signal})
     .then(function(r){return r.text();})
     .then(function(s){ clearTimeout(tm); var r; try{ r=JSON.parse(s); }catch(e){ r={ok:false,err:'bad-reply'}; } r._ms=performance.now()-t0; return r; })
@@ -104,8 +106,36 @@ function once(a,p){
 async function call(a,p,st){
   var r=await once(a,p), tries=0;
   while(!r.ok&&r.err==='busy'&&tries<3){ tries++; st.busy++; await sleep(500+Math.random()*1200); r=await once(a,p); }
+  if(!r.ok&&r.err==='network'&&a!=='draw'&&a!=='create'){ st.busy++; await sleep(300+Math.random()*700); r=await once(a,p); }   /* the app asks once more too */
   st.ms.push(r._ms); if(!r.ok){ st.fail++; if(st.errs.length<5) st.errs.push(r.err||'?'); }
   return r;
+}
+/* Cloudflare server: each test player keeps a live connection, as the app does */
+function openWs(pl,code){
+  return new Promise(function(res){
+    var t0=performance.now(), done=false, w;
+    pl.wait={}; pl.seq=0; pl.v=0; pl.pushes=0;
+    function fin(r){ if(done) return; done=true; r._ms=performance.now()-t0; res(r); }
+    try{ w=new WebSocket(WORKER.replace(/^http/,'ws')+'/ws?code='+code+'&token='+pl.token+'&lang=en'); }catch(e){ return fin({ok:false,err:'network'}); }
+    pl.ws=w;
+    var tm=setTimeout(function(){ fin({ok:false,err:'network'}); },20000);
+    w.onmessage=function(e){
+      if(e.data==='pong') return;
+      var m; try{ m=JSON.parse(e.data); }catch(x){ return; }
+      if(m.id&&pl.wait[m.id]){ var f=pl.wait[m.id]; delete pl.wait[m.id]; f(m.r||{ok:false,err:'bad-reply'}); return; }
+      if(m.push){ pl.pushes++; if(m.push.v>pl.v) pl.v=m.push.v; if(pl.onPush) pl.onPush(m.push); clearTimeout(tm); fin({ok:!!m.push.ok,err:m.push.err}); }
+    };
+    w.onclose=w.onerror=function(){ clearTimeout(tm); fin({ok:false,err:'network'}); Object.keys(pl.wait).forEach(function(k){ var f=pl.wait[k]; delete pl.wait[k]; f({ok:false,err:'network'}); }); };
+  });
+}
+function wsCall(pl,a,p,st){
+  return new Promise(function(res){
+    var t0=performance.now(), id=++pl.seq;
+    var tm=setTimeout(function(){ delete pl.wait[id]; done({ok:false,err:'network'}); },20000);
+    function done(r){ clearTimeout(tm); r._ms=performance.now()-t0; st.ms.push(r._ms); if(!r.ok){ st.fail++; if(st.errs.length<5) st.errs.push(r.err||'?'); } res(r); }
+    pl.wait[id]=done;
+    try{ pl.ws.send(JSON.stringify(Object.assign({id:id,a:a},p||{}))); }catch(e){ delete pl.wait[id]; done({ok:false,err:'network'}); }
+  });
 }
 function newStat(name){ return {name:name,ms:[],busy:0,fail:0,errs:[]}; }
 function pct(arr,p){ if(!arr.length) return 0; var s=arr.slice().sort(function(a,b){return a-b;}); return s[Math.min(s.length-1,Math.floor(p*(s.length-1)))]; }
@@ -154,6 +184,8 @@ async function run(N){
     await pool(players.slice(1),K,function(pl){ return call('join',{code:code,name:pl.name,token:pl.token,lang:'en'},s3).then(function(r){ if(!r.ok) log(pl.name+' join failed: '+r.err); }); },function(d){ prog(.1+.2*d/(N-1)); });
     addRow(s3);
 
+    if(WORKER){ await runLive(N,K,code,players,notes,t0); return; }
+
     status('Step 4 of 6: everyone draws a card at the same moment…');
     var s4=newStat('Draw a card');
     await pool(players,K,function(pl){ return call('draw',{code:code,token:pl.token,lang:'en',cats:[]},s4).then(function(r){ pl.card=r.ok&&r.me&&r.me.card?r.me.card.q:''; if(!r.ok) log(pl.name+' draw failed: '+r.err); }); },function(d){ prog(.3+.15*d/N); });
@@ -201,6 +233,62 @@ async function run(N){
   }finally{
     disableAll(false); $('#stop').disabled=true;
   }
+}
+/* steps 4 to 6 on the Cloudflare server: live connections, draws and lock-ins over them, and how fast a change reaches every phone */
+async function runLive(N,K,code,players,notes,t0){
+  status('Step 4 of 6: '+N+' phones open their live connection…');
+  var s4=newStat('Open live connection');
+  await pool(players,K,function(pl){ return openWs(pl,code).then(function(r){ s4.ms.push(r._ms); if(!r.ok){ s4.fail++; if(s4.errs.length<5) s4.errs.push(r.err); log(pl.name+' connect failed: '+r.err); } }); },function(d){ prog(.3+.1*d/N); });
+  addRow(s4);
+  var live=players.filter(function(pl){ return pl.ws&&pl.ws.readyState===1; });
+  status('Step 5 of 6: everyone draws, some change their card, everyone locks in…');
+  var s5=newStat('Draw a card'), s5b=newStat('Lock in'), locked=[];
+  await Promise.all(live.map(async function(pl,i){
+    await sleep(Math.random()*300);
+    var r=await wsCall(pl,'draw',{cats:[],lang:'en'},s5);
+    if(r.ok&&i%3===0) r=await wsCall(pl,'draw',{cats:[],lang:'en'},s5);
+    if(!r.ok){ log(pl.name+' draw failed: '+r.err); return; }
+    r=await wsCall(pl,'lock',{lang:'en'},s5b);
+    if(r.ok&&r.me&&r.me.card) locked.push(r.me.card.q); else log(pl.name+' lock failed: '+r.err);
+    prog(.4+.2*locked.length/N);
+  }));
+  addRow(s5); addRow(s5b);
+  var uniq=new Set(locked).size;
+  log(locked.length+' cards locked, '+uniq+' different');
+  if(uniq!==locked.length) notes.push('Two players locked the same card. This should never happen; please report it.');
+
+  status('Step 6 of 6: the host makes changes; how long until every phone shows them…');
+  var s6=newStat('Change reaches every phone'), host=live[0], others=live.slice(1);
+  for(var k=0;k<6&&!stopFlag&&host;k++){
+    await sleep(1500);
+    var tStart=performance.now(), want=0, got=0, doneAll;
+    var allIn=new Promise(function(r){ doneAll=r; });
+    others.forEach(function(pl){ pl.onPush=function(v){ if(want&&v.v>=want&&!pl._got){ pl._got=true; got++; if(got===others.length) doneAll(); } }; pl._got=false; });
+    var r=await wsCall(host,k%2?'draw':'next',{cats:[],lang:'en'},newStat('x'));
+    if(!r.ok){ log('host change failed: '+r.err); continue; }
+    want=r.v;
+    others.forEach(function(pl){ if(pl.v>=want&&!pl._got){ pl._got=true; got++; } });
+    if(got<others.length) await Promise.race([allIn,sleep(15000)]);
+    var ms=performance.now()-tStart; s6.ms.push(ms);
+    if(got<others.length){ s6.fail++; s6.errs.push(got+'/'+others.length); }
+    log('change '+(k+1)+': '+got+' of '+others.length+' phones updated in '+Math.round(ms)+' ms');
+    prog(.6+.38*(k+1)/6);
+  }
+  addRow(s6);
+  status('Cleaning up: test players leave…');
+  await pool(live,K,function(pl){ return wsCall(pl,'leave',{},newStat('x')).then(function(){ try{ pl.ws.close(); }catch(e){} }); });
+  prog(1);
+  var fails=rows.reduce(function(a,s){return a+s.fail;},0);
+  var act=s5.ms.concat(s5b.ms), p50=pct(act,.5), p95=pct(act,.95), upd=pct(s6.ms,.95);
+  var v, cls;
+  if(fails===0&&p95<1500&&upd<3000){ v='Good: '+N+' players on live connections. A tap on Draw or Lock typically took '+sec(p50)+' (95% under '+sec(p95)+'), and a change reached every phone within '+sec(upd)+'.'; cls='good'; }
+  else if(fails<=Math.max(1,N*0.02)&&p95<5000){ v='Usable, but slow at moments: taps typically took '+sec(p50)+', the slowest 5% over '+sec(p95)+'; changes reached every phone within '+sec(upd)+'.'; cls='warn'; }
+  else { v='Struggling at '+N+' players: '+fails+' failed, slowest taps over '+sec(p95)+'.'; cls='bad'; }
+  $('#verdict').textContent=v; $('#verdict').className='verdict '+cls;
+  notes.push('Phones stay connected, so the screen updates the moment something changes instead of every few seconds.');
+  notes.push('The whole test took '+sec(performance.now()-t0)+'. Test lobby: '+code+'.');
+  $('#notes').textContent=notes.join(' ');
+  status('Done.');
 }
 document.querySelectorAll('button[data-n]').forEach(function(b){ b.addEventListener('click',function(){ run(+b.getAttribute('data-n')); }); });
 $('#stop').addEventListener('click',function(){ stopFlag=true; status('Stopping…'); });
