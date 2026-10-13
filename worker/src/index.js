@@ -247,6 +247,7 @@ export class Hub extends DurableObject {
       this.idx = r.idx; this.idxAt = Date.now();
       this.cfg = r.settings; this.h = String(r.h || r.idx.h); this.sheetVer = String(r.ver || ''); this.cfgAt = Date.now(); this.err = '';
       await this.ctx.storage.put({ idx: { v: this.idx, at: this.idxAt }, cfg: { v: this.cfg, h: this.h, ver: this.sheetVer } });
+      this.ctx.waitUntil(this.warmAll());
     } catch (e) {
       this.err = errText(e);
       this.contentFail = Date.now();
@@ -271,6 +272,18 @@ export class Hub extends DurableObject {
       cfg: this.cfg, h: this.idx.h, defLang: this.idx.defLang,
       decks: this.idx.decks.map(m => ({ id: m.id, letter: m.letter, counts: m.counts }))
     };
+  }
+
+  /** Reads every deck in every language in the background, two at a time, so nobody waits for the sheet later. */
+  async warmAll() {
+    if (this.warming) return;
+    this.warming = true;
+    try {
+      const jobs = [];
+      this.idx.decks.forEach(m => Object.keys(m.counts).forEach(l => jobs.push([m.id, l])));
+      const next = async () => { for (let j = jobs.shift(); j; j = jobs.shift()) { try { await this.chunk(j[0], j[1]); } catch (e) {} } };
+      await Promise.all([next(), next()]);
+    } finally { this.warming = false; }
   }
 
   /** One deck in one language, matching the current prompts. An older copy is used if the sheet cannot be reached. */
@@ -607,7 +620,7 @@ export class Lobby extends DurableObject {
     this.rev++;
     if (this.bt) return;
     const n = this.L ? this.L.order.length : 0;
-    const ms = n <= 20 ? 100 : Math.min(600, n * 5);   /* a crowd gets at most about two updates a second */
+    const ms = n <= 20 ? 100 : Math.min(300, n * 3);   /* a crowd gets at most about three updates a second */
     this.bt = setTimeout(() => { this.bt = 0; this.broadcast().catch(() => {}); }, ms);
   }
 
@@ -805,6 +818,8 @@ export class Lobby extends DurableObject {
     this.seen.set(token, now);
     this.save();
     if (info.cfg.logJoins) this.log('Joins', ['hosted', code, d.name, d.lang, name, 1]);
+    /* get the other languages ready, so a player who switches language doesn't wait */
+    this.ctx.waitUntil(Promise.all(Object.keys(meta.counts).filter(l => l !== d.lang).map(l => this.chunk(meta.id, l, info.h).catch(() => null))));
     return this.view(token, d);
   }
 
