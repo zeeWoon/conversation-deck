@@ -195,6 +195,46 @@ html[lang^="zh"]{--f-display:'Bricolage Grotesque','Noto Sans SC','PingFang SC',
 html[lang^="zh"] .lab,html[lang^="zh"] .lab-i,html[lang^="zh"] .link,html[lang^="zh"] .f-cat,html[lang^="zh"] .stamp{letter-spacing:.03em}
 html[lang^="ja"]{--f-display:'Bricolage Grotesque','Noto Sans JP','Hiragino Sans','Hiragino Kaku Gothic ProN','Yu Gothic','Meiryo',sans-serif;--f-body:'Figtree','Noto Sans JP','Hiragino Sans','Hiragino Kaku Gothic ProN','Yu Gothic','Meiryo',sans-serif;--f-mono:'DM Mono','Noto Sans JP','Hiragino Sans','Hiragino Kaku Gothic ProN','Yu Gothic','Meiryo',monospace}
 html[lang^="ja"] .lab,html[lang^="ja"] .lab-i,html[lang^="ja"] .link,html[lang^="ja"] .f-cat,html[lang^="ja"] .stamp{letter-spacing:.03em}
+/* The lobby screen fits the phone: nothing scrolls, and the card takes whatever height is left */
+body.playing .app{height:100vh;height:100dvh;min-height:0;padding-block:6px 0;overflow:hidden}
+body.playing #play{min-height:0;overflow:hidden}
+#play .topbar{flex:none;min-height:40px}
+#play .lobby{flex:none;gap:6px;margin:0;padding:8px 0}
+#play .code{font-size:20px;padding:2px 10px}
+#play .pips{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+#play .pips::-webkit-scrollbar,#play .chips::-webkit-scrollbar{display:none}
+#play .pip{flex:none}
+#play .lobby .lang-row .langsel{min-height:34px;font-size:14px}
+#play .note{flex:none;margin:6px 0 0;padding:6px 10px;font-size:13px}
+#play .turn{flex:none;margin:8px 0 0}
+#play .turn h2{font-size:22px;margin:0 0 2px}
+#play .turn p.sub{font-size:14px;margin:0 0 8px}
+#play .chip-lab{display:none}
+#play .chips{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin-inline:-16px;padding:0 16px 2px;-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent)}
+#play .chip{flex:none}
+#play .chip span{min-height:38px;padding:0 13px;font-size:14px;white-space:nowrap}
+#play .stage-wrap{flex:1 1 0;min-height:0;padding-block:10px}
+#play .bar{flex:none;position:static;padding:8px 0 calc(10px + env(safe-area-inset-bottom,0px));background:none}
+#play .front{padding:16px 15px 13px}
+@supports (container-type:size){
+  #play .stage-wrap{container-type:size}
+  #play .stage{width:auto;height:min(100cqh,calc(min(80vw,320px) * 1.4));max-width:100%}
+  #play .front{container-type:inline-size}
+  #play .f-q{font-size:clamp(13px,10.2cqw,26px)}
+  #play .f-q.m{font-size:clamp(12px,9.2cqw,23px)}
+  #play .f-q.s{font-size:clamp(12px,8.2cqw,20px)}
+}
+@media (max-height:640px){
+  #play .turn h2{display:none}
+  #play .lobby{padding:6px 0;gap:4px}
+  #play .stage-wrap{padding-block:6px}
+}
+@media (max-height:600px){
+  #play .front{padding:11px 10px 8px}
+  #play .f-bot{min-height:18px}
+  #play .lobby-top .lab-i{display:none}
+  #play .btn{min-height:46px}
+}
 </style>
 </head>
 <body>
@@ -410,11 +450,12 @@ var EN={
 };
 /*EN-END*/
  
-var PAGE_VER='2.4';
+var PAGE_VER='2.4.1';
 var INIT={url:'',code:''};
 try{ var w=window.SU_INIT||{}; INIT.url=String(w.url||''); INIT.code=String(w.code||''); }catch(e){}
 /* Hosted elsewhere (GitHub Pages): the page talks to the Apps Script web app by address, and its own address is the share link. */
 var API_URL=String(window.SU_API||'');
+if(!/^https?:\/\//.test(API_URL)) API_URL='';  /* the shared template ships with a placeholder until the owner pastes in their own link */
 if(API_URL&&!window.SU_INIT){
   INIT.url=location.href.split('#')[0].split('?')[0];
   try{ INIT.code=String(new URLSearchParams(location.search).get('lobby')||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,4); }catch(e){}
@@ -485,9 +526,19 @@ function toast(m){
 }
 function theme(color,on){ app.style.setProperty('--deck',color); app.style.setProperty('--on-deck',on); }
 var cur='home';
+/* shrink the question until it fits the card, so a small screen never cuts it off */
+function fitCard(){
+  var q=$('#cQ'), f=q&&q.parentNode; if(!f||!q.textContent) return;
+  q.style.fontSize='';
+  var fs=parseFloat(getComputedStyle(q).fontSize)||20, n=0;
+  while(f.scrollHeight>f.clientHeight+1&&fs>10&&n++<24){ fs-=1; q.style.fontSize=fs+'px'; }
+}
+var fitT; window.addEventListener('resize',function(){ clearTimeout(fitT); fitT=setTimeout(fitCard,120); });
 function show(name){
   cur=name;
   ['home','play','closed'].forEach(function(id){ $('#'+id).hidden=(id!==name); });
+  document.body.classList.toggle('playing',name==='play');
+  if(name==='play') requestAnimationFrame(fitCard);
   try{window.scrollTo(0,0);}catch(e){}
   if(name!=='play' && S.pick) theme(S.pick.color,S.pick.on);
 }
@@ -590,7 +641,7 @@ async function loadDecks(lang){
     b.addEventListener('click',function(){ loadDecks(); }); box.appendChild(b);
     return false;
   }
-  $('#ver').textContent='v'+PAGE_VER+(r.ver===PAGE_VER?'':' · server '+(r.ver||'not updated'));
+  $('#ver').textContent='v'+PAGE_VER+(r.ver===PAGE_VER.split('.').slice(0,2).join('.')?'':' · server '+(r.ver||'not updated'));  /* page fixes (2.4.1) need no server change */
   S.str=r.strings||{}; S.langs=r.langs||[]; S.lang=r.lang||'en'; S.langSet=true; S.needPass=!!r.needPass; S.open=r.open!==false; S.closedMsg=r.msg||'';
   fillLangs();
   if(!S.open){ applyStatic(); if(!S.code) goClosed(S.closedMsg); return true; }
@@ -673,6 +724,7 @@ function syncCard(){
     $('#cCat').textContent=c.cat;
     $('#cQ').textContent=c.q;
     $('#cQ').className='f-q'+(c.q.length>110?' s':c.q.length>80?' m':'');
+    fitCard();
     $('#cNo').textContent=t('card.no',{n:String(c.n).padStart(2,'0')});
     S.shown=c.q;
   }
@@ -922,4 +974,5 @@ start();
 </script>
 </body>
 </html>
-
+ 
+Claude is responding
