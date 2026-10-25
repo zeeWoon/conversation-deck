@@ -170,6 +170,11 @@ button,input,textarea{font:inherit;color:inherit}
   .flip,.slot,.stamp{transition:none}
   .stage.shuffling .layer,.stage.shuffling .slot{animation:none}
 }
+
+/* Time Travel deck: a nod to a blue police-box time machine (door windows and panels, glowing lamp) */
+#app[data-deck="timetravel"] .face.back{background-color:var(--deck);background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 140' preserveAspectRatio='none'%3E%3Cg fill='none' stroke='%23fff' stroke-opacity='.6' stroke-width='.7'%3E%3Crect x='8' y='15' width='84' height='10' fill='%23fff' fill-opacity='.1'/%3E%3Crect x='8' y='28' width='84' height='104'/%3E%3Cpath d='M50 28V132'/%3E%3Crect x='13' y='33' width='14' height='11' fill='%23FFF1B8' fill-opacity='.9' stroke='%23fff' stroke-opacity='.8'/%3E%3Crect x='13' y='47' width='14' height='11' fill='%23FFF1B8' fill-opacity='.9' stroke='%23fff' stroke-opacity='.8'/%3E%3Crect x='33' y='33' width='14' height='11' fill='%23FFF1B8' fill-opacity='.9' stroke='%23fff' stroke-opacity='.8'/%3E%3Crect x='33' y='47' width='14' height='11' fill='%23FFF1B8' fill-opacity='.9' stroke='%23fff' stroke-opacity='.8'/%3E%3Crect x='53' y='33' width='14' height='11' fill='%23FFF1B8' fill-opacity='.9' stroke='%23fff' stroke-opacity='.8'/%3E%3Crect x='53' y='47' width='14' height='11' fill='%23FFF1B8' fill-opacity='.9' stroke='%23fff' stroke-opacity='.8'/%3E%3Crect x='73' y='33' width='14' height='11' fill='%23FFF1B8' fill-opacity='.9' stroke='%23fff' stroke-opacity='.8'/%3E%3Crect x='73' y='47' width='14' height='11' fill='%23FFF1B8' fill-opacity='.9' stroke='%23fff' stroke-opacity='.8'/%3E%3Crect x='13' y='84' width='34' height='20'/%3E%3Crect x='13' y='106' width='34' height='20'/%3E%3Crect x='53' y='84' width='34' height='20'/%3E%3Crect x='53' y='106' width='34' height='20'/%3E%3C/g%3E%3Crect x='44' y='6' width='12' height='7' rx='3' fill='%23FFF1B8'/%3E%3C/svg%3E");background-size:100% 100%;background-repeat:no-repeat}
+#app[data-deck="timetravel"] .face.back::after{width:44px;height:44px;font-size:24px;border-radius:8px;box-shadow:0 0 0 3px var(--deck),0 0 18px 2px rgba(255,241,184,.55)}
+#app[data-deck="timetravel"] .front{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 140'%3E%3Cg fill='none' stroke='%23003B6F' stroke-opacity='.13' stroke-width='1.2'%3E%3Crect x='44' y='4' width='12' height='7' rx='3'/%3E%3Crect x='20' y='14' width='60' height='9'/%3E%3Crect x='24' y='26' width='52' height='112'/%3E%3Cpath d='M50 26V138'/%3E%3Crect x='28' y='32' width='20' height='11'/%3E%3Crect x='28' y='46' width='20' height='11'/%3E%3Crect x='52' y='32' width='20' height='11'/%3E%3Crect x='52' y='46' width='20' height='11'/%3E%3C/g%3E%3C/svg%3E");background-size:46% auto;background-position:right 14px bottom 14px;background-repeat:no-repeat}
 .pip.away{opacity:.45}
 .pip{max-width:20ch}
 .pip.more{border-style:dotted}
@@ -366,7 +371,7 @@ body.playing #play{min-height:0;overflow:hidden}
   <div id="toast" role="status" aria-live="polite"></div>
 </div>
 
-<script>window.SU_INIT = null; window.SU_API = 'https://script.google.com/macros/s/AKfycbzWQHZS-RGQhsNFyhTPlaXa-PuJK9r7hZCNqYID0l8E5g7mEoXWx5g_EpGldLmZQMDD/exec'; window.SU_WORKER = 'https://conversation-deck.woon-hongze.workers.dev';</script>
+<script>window.SU_INIT = null; window.SU_API = 'https://script.google.com/macros/s/AKfycbzWQHZS-RGQhsNFyhTPlaXa-PuJK9r7hZCNqYID0l8E5g7mEoXWx5g_EpGldLmZQMDD/exec'; window.SU_WORKER = '';</script>
 <script>
 (function(){
 'use strict';
@@ -527,7 +532,7 @@ function toast(m){
   var el=$('#toast'); el.textContent=m; el.classList.add('show');
   clearTimeout(tt); tt=setTimeout(function(){el.classList.remove('show');},3400);
 }
-function theme(color,on){ app.style.setProperty('--deck',color); app.style.setProperty('--on-deck',on); }
+function theme(color,on,id){ app.style.setProperty('--deck',color); app.style.setProperty('--on-deck',on); if(id) app.setAttribute('data-deck',id); else app.removeAttribute('data-deck'); }
 var cur='home';
 /* shrink the question until it fits the card, so a small screen never cuts it off */
 function fitCard(){
@@ -543,7 +548,7 @@ function show(name){
   document.body.classList.toggle('playing',name==='play');
   if(name==='play') requestAnimationFrame(fitCard);
   try{window.scrollTo(0,0);}catch(e){}
-  if(name!=='play' && S.pick) theme(S.pick.color,S.pick.on);
+  if(name!=='play' && S.pick) theme(S.pick.color,S.pick.on,S.pick.id);
 }
 
 /* ---------- talking to the script ---------- */
@@ -696,7 +701,7 @@ function buildDecks(){
 }
 $('#decks').addEventListener('change',function(e){
   var d=S.decks.filter(function(x){return x.id===e.target.value;})[0];
-  if(d){ S.pick=d; theme(d.color,d.on); homeInfo(); }
+  if(d){ S.pick=d; theme(d.color,d.on,d.id); homeInfo(); }
 });
 function browserLang(){ try{ return String(navigator.language||''); }catch(e){ return ''; } }
 /* Each player chooses their own language. The lobby has none: every request says which one I read, and the cards come back in it. */
@@ -726,7 +731,7 @@ async function loadDecks(lang){
   S.pick=keep||S.decks.filter(function(d){return d.id==='justmet';})[0]||S.decks[0];
   $('#passBox').hidden=!S.needPass;
   if(S.needPass&&!$('#passIn').value) $('#passIn').value=store.get(PASSK)||'';
-  rerender(); theme(S.pick.color,S.pick.on);
+  rerender(); theme(S.pick.color,S.pick.on,S.pick.id);
   $('#createBtn').disabled=false;
   return true;
 }
@@ -786,7 +791,7 @@ function apply(v,force){
   if(!v||!v.me) return;
   if(!force&&S.view&&v.code===S.view.code&&v.v<S.view.v) return;   /* an older answer arriving late */
   S.view=v;
-  theme(v.deck.color,v.deck.on);
+  theme(v.deck.color,v.deck.on,v.deck.id);
   buildChips();
   renderPlay();
   if(!S.busy) syncCard();
